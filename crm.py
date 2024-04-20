@@ -38,13 +38,11 @@ def create_user_db(user_id):
     ''')
     conn.commit()
     return conn
-
-def add_customer(conn, data):
-    with conn:
-        conn.execute('''
-            INSERT INTO customer_table (customer_id, name, birthday, age, occupation, employment_history, place_of_birth, hobbies, family_members, needs)
-            VALUES (:customer_id, :name, :birthday, :age, :occupation, :employment_history, :place_of_birth, :hobbies, :family_members, :needs)
-        ''', data)
+def get_customer_by_id(conn, customer_id):
+    c = conn.cursor()
+    c.execute('SELECT * FROM customer_table WHERE customer_id = ?', (customer_id,))
+    data = c.fetchone()
+    return data if data else None
 
 def update_customer(conn, data):
     with conn:
@@ -55,21 +53,18 @@ def update_customer(conn, data):
         ''', data)
         conn.commit()
 
-def view_all_customers(conn):
-    c = conn.cursor()
-    c.execute('SELECT * FROM customer_table')
-    data = c.fetchall()
-    return data
+# その他の関数やmain関数の定義は以前提供したものと同じです。
 
-def get_customer_by_id(conn, customer_id):
-    c = conn.cursor()
-    c.execute('SELECT * FROM customer_table WHERE customer_id = ?', (customer_id,))
-    data = c.fetchone()
-    return data if data else None
-
-def calculate_age(birthday):
-    today = datetime.today()
-    return today.year - birthday.year - ((today.month, today.day) < (birthday.month, birthday.day))
+def add_customer(conn, data):
+    try:
+        with conn:
+            conn.execute('''
+                INSERT INTO customer_table (customer_id, name, birthday, age, occupation, employment_history, place_of_birth, hobbies, family_members, needs)
+                VALUES (:customer_id, :name, :birthday, :age, :occupation, :employment_history, :place_of_birth, :hobbies, :family_members, :needs)
+            ''', data)
+            st.success('顧客情報が登録されました。')
+    except sqlite3.IntegrityError:
+        st.error(f"重複エラー: {data['name']} はすでに登録されています。")
 
 def import_customers(conn, csv_file):
     df = pd.read_csv(csv_file)
@@ -90,6 +85,10 @@ def import_customers(conn, csv_file):
         }
         add_customer(conn, data)
 
+def calculate_age(birthday):
+    today = datetime.today()
+    return today.year - birthday.year - ((today.month, today.day) < (birthday.month, birthday.day))
+
 def main():
     st.title('営業管理ツール')
 
@@ -103,7 +102,12 @@ def main():
         authenticate_user(users)
     if "user_id" in st.session_state:
         conn = create_user_db(st.session_state["user_id"])
-        c = conn.cursor()
+
+        # CSVインポート機能
+        st.subheader("CSVから顧客データをインポート")
+        csv_file = st.file_uploader("CSVファイルを選択してください", type=["csv"])
+        if csv_file and st.button("インポート"):
+            import_customers(conn, csv_file)
 
         # 顧客情報登録
         with st.form("customer_form"):
@@ -133,18 +137,12 @@ def main():
                     'needs': needs
                 }
                 add_customer(conn, data)
-                st.success('顧客情報が登録されました。')
-
-        # CSVインポート機能
-        st.subheader("CSVから顧客データをインポート")
-        csv_file = st.file_uploader("CSVファイルを選択してください", type=["csv"])
-        if csv_file and st.button("インポート"):
-            import_customers(conn, csv_file)
-            st.success("顧客データがインポートされました。")
 
         # 顧客情報一覧と詳細編集
         if st.checkbox('顧客情報一覧を表示'):
-            customer_data = view_all_customers(conn)
+            c = conn.cursor()
+            c.execute('SELECT * FROM customer_table')
+            customer_data = c.fetchall()
             customer_df = pd.DataFrame(customer_data, columns=["ID", "名前", "生年月日", "年齢", "職種", "職歴", "出生地", "趣味", "家族構成", "ニーズ"])
             st.write(customer_df)
             selected_customer_id = st.selectbox('編集する顧客のIDを選択', customer_df['ID'])
