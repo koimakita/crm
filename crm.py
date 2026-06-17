@@ -3,6 +3,7 @@ import pandas as pd
 import sqlite3
 from datetime import datetime
 import hashlib
+from dj_tracker_page import show_dj_tracker_page
 
 # ユーザー認証
 def authenticate_user(users):
@@ -91,6 +92,15 @@ def calculate_age(birthday):
 
 def main():
     st.title('営業管理ツール')
+
+    page = st.sidebar.selectbox(
+        "ページ選択",
+        ["顧客管理", "DJ Track Extractor"],
+    )
+
+    if page == "DJ Track Extractor":
+        show_dj_tracker_page()
+        return
 
     # ユーザー認証情報
     users = {
