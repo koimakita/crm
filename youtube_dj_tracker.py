@@ -195,27 +195,9 @@ async def identify_tracks_shazam(url: str, duration: int, interval: int = 300) -
 
             seen.add(key)
 
-            # ShazamレスポンスからApple MusicリンクをURL取得
-            apple_url = ""
-            hub = track.get("hub", {})
-            for action in hub.get("actions", []):
-                if action.get("type") == "uri":
-                    uri = action.get("uri", "")
-                    if "apple" in uri:
-                        apple_url = uri
-                        break
-            for provider in hub.get("providers", []):
-                for action in provider.get("actions", []):
-                    if action.get("type") == "uri":
-                        uri = action.get("uri", "")
-                        if "apple" in uri:
-                            apple_url = uri
-                            break
-
-            # Apple MusicリンクがなければiTunes APIで補完
-            if not apple_url:
-                apple = search_apple_music(f"{artist} {title}")
-                apple_url = apple["apple_music_url"] if apple else ""
+            # iTunes APIで music.apple.com のページリンクを取得
+            apple = search_apple_music(f"{artist} {title}")
+            apple_url = apple["apple_music_url"] if apple else ""
 
             tracks.append({
                 "timestamp": ts,
@@ -303,15 +285,16 @@ def print_results(result: dict):
     print(f"\n全{len(tracks)}曲\n")
     for i, track in enumerate(tracks, 1):
         ts = track.get("timestamp", "")
-        original = track.get("original_title", "")
         apple = track.get("apple")
         ts_str = f"[{ts}] " if ts else ""
-        print(f"{i:02d}. {ts_str}{original}")
-        if apple:
-            if apple.get("artist_name") and apple.get("track_name"):
-                print(f"    {apple['artist_name']} - {apple['track_name']}")
-            if apple.get("apple_music_url"):
-                print(f"    Apple Music: {apple['apple_music_url']}")
+
+        if apple and apple.get("artist_name") and apple.get("track_name"):
+            print(f"{i:02d}. {ts_str}{apple['artist_name']} - {apple['track_name']}")
+        else:
+            print(f"{i:02d}. {ts_str}{track.get('original_title', '')}")
+
+        if apple and apple.get("apple_music_url"):
+            print(f"    Apple Music: {apple['apple_music_url']}")
         else:
             print("    Apple Music: 見つかりませんでした")
         print()
