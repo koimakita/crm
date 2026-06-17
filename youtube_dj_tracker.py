@@ -29,7 +29,7 @@ def get_youtube_video_info(url: str) -> dict:
     return {
         "title": info.get("title", ""),
         "description": info.get("description", ""),
-        "chapters": info.get("chapters", []),
+        "chapters": info.get("chapters") or [],
         "channel": info.get("channel", ""),
         "upload_date": info.get("upload_date", ""),
         "duration": info.get("duration", 0),
