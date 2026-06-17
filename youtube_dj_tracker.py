@@ -1,6 +1,7 @@
 """
 YouTube DJ Track Extractor
-指定したYouTubeのDJ動画から曲リストを取得し、Apple Musicのリンクを表示する
+YouTube DJ動画から曲リストを取得し、Apple Musicのリンクを表示する
+説明文にトラックリストがない場合はShazam音声認識で自動識別する
 """
 
 import yt_dlp
@@ -10,94 +11,73 @@ import json
 import argparse
 import sys
 import time
+import asyncio
+import os
+import tempfile
 from urllib.parse import quote_plus
 
 
 def get_youtube_video_info(url: str) -> dict:
-    """yt-dlpを使ってYouTube動画の情報を取得する"""
     ydl_opts = {
         "quiet": True,
-        "no_warnings": False,
-        "extract_flat": False,
+        "no_warnings": True,
         "skip_download": True,
         "no_playlist": True,
     }
-
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
-
     return {
         "title": info.get("title", ""),
         "description": info.get("description", ""),
         "chapters": info.get("chapters") or [],
         "channel": info.get("channel", ""),
-        "upload_date": info.get("upload_date", ""),
         "duration": info.get("duration", 0),
+        "thumbnail": info.get("thumbnail", ""),
     }
 
 
-def extract_tracks_from_chapters(chapters: list) -> list[dict]:
-    """チャプター情報からトラックリストを抽出する"""
-    tracks = []
-    for ch in chapters:
-        title = ch.get("title", "").strip()
-        if title:
-            tracks.append(
-                {
-                    "title": title,
-                    "timestamp": _seconds_to_timestamp(ch.get("start_time", 0)),
-                }
-            )
-    return tracks
+def extract_tracks_from_chapters(chapters: list) -> list:
+    return [
+        {
+            "title": ch.get("title", "").strip(),
+            "timestamp": _seconds_to_timestamp(ch.get("start_time", 0)),
+        }
+        for ch in chapters
+        if ch.get("title", "").strip()
+    ]
 
 
-def extract_tracks_from_description(description: str) -> list[dict]:
-    """動画説明文からトラックリストを抽出する"""
+def extract_tracks_from_description(description: str) -> list:
     tracks = []
     lines = description.split("\n")
-
-    # タイムスタンプ付きパターン: 00:00 Artist - Track Name
     timestamp_pattern = re.compile(
         r"^(\d{1,2}:\d{2}(?::\d{2})?)\s*[-–—:．]?\s*(.+)$"
     )
-
-    # 番号付きパターン: 01. Artist - Track
     numbered_pattern = re.compile(r"^\d{1,2}[.)]\s+(.+)$")
-
-    # "Music in this video" セクションの開始を検出
     music_section_headers = re.compile(
         r"(track\s*list|tracklist|music\s+in\s+this\s+video|使用曲|楽曲|曲目|playlist|set\s*list)",
         re.IGNORECASE,
     )
-
     in_music_section = False
-
     for line in lines:
         line = line.strip()
         if not line:
             continue
-
         if music_section_headers.search(line):
             in_music_section = True
             continue
-
-        # タイムスタンプパターンはセクション外でも有効
         ts_match = timestamp_pattern.match(line)
         if ts_match:
-            tracks.append(
-                {
-                    "timestamp": ts_match.group(1),
-                    "title": ts_match.group(2).strip(),
-                }
-            )
+            tracks.append({
+                "timestamp": ts_match.group(1),
+                "title": ts_match.group(2).strip(),
+            })
             in_music_section = True
             continue
-
         if in_music_section:
             num_match = numbered_pattern.match(line)
             if num_match:
                 tracks.append({"title": num_match.group(1).strip()})
-
     return tracks
 
 
@@ -112,112 +92,226 @@ def _seconds_to_timestamp(seconds: float) -> str:
 
 
 def search_apple_music(track_query: str) -> dict | None:
-    """iTunes Search APIでApple Musicのリンクを検索する"""
     url = "https://itunes.apple.com/search"
-    params = {
-        "term": track_query,
-        "entity": "song",
-        "limit": 1,
-        "media": "music",
-    }
-
+    params = {"term": track_query, "entity": "song", "limit": 1, "media": "music"}
     try:
         resp = requests.get(url, params=params, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-
         if data.get("resultCount", 0) > 0:
-            result = data["results"][0]
+            r = data["results"][0]
             return {
-                "track_name": result.get("trackName", ""),
-                "artist_name": result.get("artistName", ""),
-                "album": result.get("collectionName", ""),
-                "apple_music_url": result.get("trackViewUrl", ""),
-                "artwork_url": result.get("artworkUrl100", "").replace(
-                    "100x100", "300x300"
-                ),
-                "preview_url": result.get("previewUrl", ""),
+                "track_name": r.get("trackName", ""),
+                "artist_name": r.get("artistName", ""),
+                "album": r.get("collectionName", ""),
+                "apple_music_url": r.get("trackViewUrl", ""),
             }
-    except (requests.RequestException, KeyError, json.JSONDecodeError) as e:
-        print(f"  [警告] iTunes検索エラー ({track_query}): {e}", file=sys.stderr)
-
+    except Exception:
+        pass
     return None
 
 
-def process_video(url: str, delay: float = 0.5) -> dict:
-    """YouTube動画からトラックリストを取得してApple Musicリンクを付ける"""
+def _download_audio_segment(url: str, start_sec: int, duration: int, out_path: str) -> str | None:
+    """指定した時間帯の音声セグメントをダウンロードして、ファイルパスを返す"""
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "format": "bestaudio[ext=m4a]/bestaudio/best",
+        "outtmpl": out_path + ".%(ext)s",
+        "download_ranges": yt_dlp.utils.download_range_func(
+            [], [[start_sec, start_sec + duration]]
+        ),
+        "force_keyframes_at_cuts": False,
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "64",
+        }],
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+    except Exception as e:
+        print(f"    ダウンロードエラー: {e}", file=sys.stderr)
+        return None
+
+    # 実際に保存されたファイルを探す
+    parent = os.path.dirname(out_path)
+    base = os.path.basename(out_path)
+    for fname in os.listdir(parent):
+        if fname.startswith(base + "."):
+            return os.path.join(parent, fname)
+    return None
+
+
+async def identify_tracks_shazam(url: str, duration: int, interval: int = 300) -> list:
+    """Shazam音声認識でトラックを特定する"""
+    try:
+        from shazamio import Shazam
+    except ImportError:
+        print("\n[エラー] shazamioが必要です:")
+        print("  pip install shazamio")
+        return []
+
+    shazam = Shazam()
+    tracks = []
+    seen: set[str] = set()
+
+    # 最初の30秒と最後の30秒を除いてサンプリング
+    sample_times = list(range(30, max(31, duration - 30), interval))
+    print(f"\nShazam音声認識で解析します（{len(sample_times)}箇所 × 15秒）")
+    print("※ 初回はダウンロードに時間がかかります\n")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for i, start_sec in enumerate(sample_times):
+            ts = _seconds_to_timestamp(start_sec)
+            print(f"[{i+1}/{len(sample_times)}] {ts} を解析中...", end=" ", flush=True)
+
+            seg_base = os.path.join(tmpdir, f"seg_{i}")
+            seg_file = _download_audio_segment(url, start_sec, 15, seg_base)
+
+            if not seg_file:
+                print("ダウンロード失敗")
+                continue
+
+            try:
+                result = await shazam.recognize(seg_file)
+            except Exception as e:
+                print(f"認識エラー: {e}")
+                continue
+
+            if not result or "track" not in result:
+                print("認識不可")
+                continue
+
+            track = result["track"]
+            title = track.get("title", "")
+            artist = track.get("subtitle", "")
+            key = f"{title}|{artist}".lower()
+
+            if not title or key in seen:
+                print("既出 or 不明")
+                continue
+
+            seen.add(key)
+
+            # ShazamレスポンスからApple MusicリンクをURL取得
+            apple_url = ""
+            hub = track.get("hub", {})
+            for action in hub.get("actions", []):
+                if action.get("type") == "uri":
+                    uri = action.get("uri", "")
+                    if "apple" in uri:
+                        apple_url = uri
+                        break
+            for provider in hub.get("providers", []):
+                for action in provider.get("actions", []):
+                    if action.get("type") == "uri":
+                        uri = action.get("uri", "")
+                        if "apple" in uri:
+                            apple_url = uri
+                            break
+
+            # Apple MusicリンクがなければiTunes APIで補完
+            if not apple_url:
+                apple = search_apple_music(f"{artist} {title}")
+                apple_url = apple["apple_music_url"] if apple else ""
+
+            tracks.append({
+                "timestamp": ts,
+                "title": title,
+                "artist": artist,
+                "apple_music_url": apple_url,
+            })
+            print(f"✓ {artist} - {title}")
+            await asyncio.sleep(0.5)
+
+    return tracks
+
+
+def process_video(url: str, use_shazam: bool = True, interval: int = 300) -> dict:
     print(f"動画情報を取得中: {url}")
     info = get_youtube_video_info(url)
-
     print(f"動画タイトル: {info['title']}")
     print(f"チャンネル: {info['channel']}")
 
-    # チャプターからトラックを取得（優先）
-    tracks = extract_tracks_from_chapters(info["chapters"])
+    # 1. チャプターから取得（最速）
+    raw_tracks = extract_tracks_from_chapters(info["chapters"])
+    method = "チャプター"
 
-    if tracks:
-        print(f"\nチャプターから {len(tracks)} 曲を検出しました")
-    else:
-        # 説明文からトラックを取得
-        tracks = extract_tracks_from_description(info["description"])
-        if tracks:
-            print(f"\n説明文から {len(tracks)} 曲を検出しました")
-        else:
-            print("\n曲情報が見つかりませんでした。説明文を確認してください:")
-            print(info["description"][:500])
-            return {"video_info": info, "tracks": []}
+    # 2. 説明文から取得
+    if not raw_tracks:
+        raw_tracks = extract_tracks_from_description(info["description"])
+        method = "説明文"
 
-    # Apple Musicリンクを検索
-    print("\nApple Musicリンクを検索中...")
-    results = []
-    for i, track in enumerate(tracks, 1):
-        title = track.get("title", "")
-        timestamp = track.get("timestamp", "")
-
-        print(f"  [{i}/{len(tracks)}] {title}")
-        apple_info = search_apple_music(title)
-
-        results.append(
-            {
-                "timestamp": timestamp,
+    if raw_tracks:
+        print(f"\n{method}から {len(raw_tracks)} 曲を検出しました")
+        print("Apple Musicリンクを検索中...")
+        results = []
+        for i, t in enumerate(raw_tracks, 1):
+            title = t.get("title", "")
+            print(f"  [{i}/{len(raw_tracks)}] {title}")
+            apple = search_apple_music(title)
+            results.append({
+                "timestamp": t.get("timestamp", ""),
                 "original_title": title,
-                "apple_music": apple_info,
-            }
-        )
+                "apple": apple,
+            })
+            time.sleep(0.3)
+        return {"video_info": info, "tracks": results, "method": method}
 
-        if delay > 0 and i < len(tracks):
-            time.sleep(delay)
+    # 3. Shazam音声認識
+    print("\n説明文にトラックリストが見つかりませんでした。")
+    if not use_shazam:
+        return {"video_info": info, "tracks": [], "method": "none"}
 
-    return {"video_info": info, "tracks": results}
+    shazam_tracks = asyncio.run(
+        identify_tracks_shazam(url, info["duration"], interval=interval)
+    )
+    results = [
+        {
+            "timestamp": t["timestamp"],
+            "original_title": f"{t['artist']} - {t['title']}",
+            "apple": {
+                "track_name": t["title"],
+                "artist_name": t["artist"],
+                "album": "",
+                "apple_music_url": t["apple_music_url"],
+            },
+        }
+        for t in shazam_tracks
+    ]
+    return {"video_info": info, "tracks": results, "method": "Shazam"}
 
 
 def print_results(result: dict):
-    """結果を見やすく表示する"""
     info = result["video_info"]
     tracks = result["tracks"]
+    method = result.get("method", "")
 
     print("\n" + "=" * 60)
     print(f"動画: {info['title']}")
     print(f"チャンネル: {info['channel']}")
+    if method:
+        print(f"取得方法: {method}")
     print("=" * 60)
 
     if not tracks:
-        print("トラックが見つかりませんでした。")
+        print("\nトラックが見つかりませんでした。")
         return
 
     print(f"\n全{len(tracks)}曲\n")
     for i, track in enumerate(tracks, 1):
         ts = track.get("timestamp", "")
         original = track.get("original_title", "")
-        apple = track.get("apple_music")
-
+        apple = track.get("apple")
         ts_str = f"[{ts}] " if ts else ""
         print(f"{i:02d}. {ts_str}{original}")
-
         if apple:
-            print(f"    アーティスト: {apple['artist_name']}")
-            print(f"    曲名: {apple['track_name']}")
-            print(f"    Apple Music: {apple['apple_music_url']}")
+            if apple.get("artist_name") and apple.get("track_name"):
+                print(f"    {apple['artist_name']} - {apple['track_name']}")
+            if apple.get("apple_music_url"):
+                print(f"    Apple Music: {apple['apple_music_url']}")
         else:
             print("    Apple Music: 見つかりませんでした")
         print()
@@ -228,20 +322,15 @@ def main():
         description="YouTube DJ動画からトラックリストを取得してApple Musicリンクを表示する"
     )
     parser.add_argument("url", help="YouTube動画のURL")
+    parser.add_argument("--json", action="store_true", help="JSON形式で出力")
+    parser.add_argument("--no-shazam", action="store_true", help="Shazam音声認識を使わない")
     parser.add_argument(
-        "--json",
-        action="store_true",
-        help="結果をJSON形式で出力する",
-    )
-    parser.add_argument(
-        "--delay",
-        type=float,
-        default=0.5,
-        help="Apple Music API呼び出し間の待機時間（秒）",
+        "--interval", type=int, default=300,
+        help="サンプリング間隔（秒）デフォルト: 300（5分おき）"
     )
     args = parser.parse_args()
 
-    result = process_video(args.url, delay=args.delay)
+    result = process_video(args.url, use_shazam=not args.no_shazam, interval=args.interval)
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
