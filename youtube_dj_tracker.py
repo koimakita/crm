@@ -266,38 +266,48 @@ def process_video(url: str, use_shazam: bool = True, interval: int = 300) -> dic
     return {"video_info": info, "tracks": results, "method": "Shazam"}
 
 
-def print_results(result: dict):
+def format_results(result: dict) -> str:
     info = result["video_info"]
     tracks = result["tracks"]
     method = result.get("method", "")
 
-    print("\n" + "=" * 60)
-    print(f"動画: {info['title']}")
-    print(f"チャンネル: {info['channel']}")
+    lines = []
+    lines.append("=" * 60)
+    lines.append(f"動画: {info['title']}")
+    lines.append(f"チャンネル: {info['channel']}")
     if method:
-        print(f"取得方法: {method}")
-    print("=" * 60)
+        lines.append(f"取得方法: {method}")
+    lines.append("=" * 60)
 
     if not tracks:
-        print("\nトラックが見つかりませんでした。")
-        return
+        lines.append("\nトラックが見つかりませんでした。")
+        return "\n".join(lines)
 
-    print(f"\n全{len(tracks)}曲\n")
+    lines.append(f"\n全{len(tracks)}曲\n")
     for i, track in enumerate(tracks, 1):
         ts = track.get("timestamp", "")
         apple = track.get("apple")
         ts_str = f"[{ts}] " if ts else ""
 
         if apple and apple.get("artist_name") and apple.get("track_name"):
-            print(f"{i:02d}. {ts_str}{apple['artist_name']} - {apple['track_name']}")
+            lines.append(f"{i:02d}. {ts_str}{apple['artist_name']} - {apple['track_name']}")
         else:
-            print(f"{i:02d}. {ts_str}{track.get('original_title', '')}")
+            lines.append(f"{i:02d}. {ts_str}{track.get('original_title', '')}")
 
         if apple and apple.get("apple_music_url"):
-            print(f"    Apple Music: {apple['apple_music_url']}")
+            lines.append(f"    Apple Music: {apple['apple_music_url']}")
         else:
-            print("    Apple Music: 見つかりませんでした")
-        print()
+            lines.append("    Apple Music: 見つかりませんでした")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def save_txt(result: dict, filepath: str):
+    text = format_results(result)
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(text)
+    print(f"\nテキストファイルに保存しました: {filepath}")
 
 
 def main():
@@ -311,6 +321,7 @@ def main():
         "--interval", type=int, default=300,
         help="サンプリング間隔（秒）デフォルト: 300（5分おき）"
     )
+    parser.add_argument("--output", "-o", help="保存先のテキストファイル名（例: tracklist.txt）")
     args = parser.parse_args()
 
     result = process_video(args.url, use_shazam=not args.no_shazam, interval=args.interval)
@@ -318,7 +329,17 @@ def main():
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
-        print_results(result)
+        text = format_results(result)
+        print("\n" + text)
+
+        # --output 指定があればそのファイル名、なければ自動生成
+        if args.output:
+            filepath = args.output
+        else:
+            safe_title = re.sub(r'[\\/:*?"<>|]', "_", result["video_info"]["title"])[:50]
+            filepath = f"{safe_title}.txt"
+
+        save_txt(result, filepath)
 
 
 if __name__ == "__main__":
