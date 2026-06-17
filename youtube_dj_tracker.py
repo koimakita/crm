@@ -17,12 +17,23 @@ import tempfile
 from urllib.parse import quote_plus
 
 
+def _clean_youtube_url(url: str) -> str:
+    """プレイリスト・ラジオなどの余分なパラメータを除去して動画URLだけにする"""
+    import re
+    m = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})", url)
+    if m:
+        return f"https://www.youtube.com/watch?v={m.group(1)}"
+    return url
+
+
 def get_youtube_video_info(url: str) -> dict:
+    url = _clean_youtube_url(url)
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
         "no_playlist": True,
+        "socket_timeout": 30,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
