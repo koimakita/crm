@@ -116,6 +116,7 @@ def search_apple_music(track_query: str) -> dict | None:
                 "artist_name": r.get("artistName", ""),
                 "album": r.get("collectionName", ""),
                 "apple_music_url": r.get("trackViewUrl", ""),
+                "genre": r.get("primaryGenreName", ""),
             }
     except Exception:
         pass
@@ -305,8 +306,11 @@ def format_results(result: dict) -> str:
         else:
             lines.append(f"{i:02d}. {ts_str}{track.get('original_title', '')}")
 
-        if apple and apple.get("apple_music_url"):
-            lines.append(f"    Apple Music: {apple['apple_music_url']}")
+        if apple:
+            if apple.get("genre"):
+                lines.append(f"    ジャンル: {apple['genre']}")
+            if apple.get("apple_music_url"):
+                lines.append(f"    Apple Music: {apple['apple_music_url']}")
         else:
             lines.append("    Apple Music: 見つかりませんでした")
         lines.append("")
