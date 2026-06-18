@@ -123,36 +123,47 @@ def search_apple_music(track_query: str) -> dict | None:
     return None
 
 
-def _download_audio_segment(url: str, start_sec: int, duration: int, out_path: str) -> str | None:
-    """指定した時間帯の音声セグメントをダウンロードして、ファイルパスを返す"""
+def _get_audio_stream_url(video_url: str) -> str | None:
+    """yt-dlpで音声ストリームの直接URLを取得する（一度だけ呼ぶ）"""
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
         "format": "bestaudio[ext=m4a]/bestaudio/best",
-        "outtmpl": out_path + ".%(ext)s",
-        "download_ranges": yt_dlp.utils.download_range_func(
-            [], [[start_sec, start_sec + duration]]
-        ),
-        "force_keyframes_at_cuts": False,
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "64",
-        }],
+        "skip_download": True,
+        "socket_timeout": 30,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+            info = ydl.extract_info(video_url, download=False)
+            # フォーマットリストから音声URLを取得
+            if "url" in info:
+                return info["url"]
+            for fmt in reversed(info.get("formats", [])):
+                if fmt.get("acodec") != "none" and fmt.get("url"):
+                    return fmt["url"]
     except Exception as e:
-        print(f"    ダウンロードエラー: {e}", file=sys.stderr)
-        return None
+        print(f"音声URL取得エラー: {e}", file=sys.stderr)
+    return None
 
-    # 実際に保存されたファイルを探す
-    parent = os.path.dirname(out_path)
-    base = os.path.basename(out_path)
-    for fname in os.listdir(parent):
-        if fname.startswith(base + "."):
-            return os.path.join(parent, fname)
+
+def _extract_segment_ffmpeg(stream_url: str, start_sec: int, duration: int, out_path: str) -> str | None:
+    """ffmpegで音声ストリームから指定時間のセグメントを切り出す"""
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", str(start_sec),
+        "-i", stream_url,
+        "-t", str(duration),
+        "-ac", "1",
+        "-ar", "44100",
+        "-f", "mp3",
+        out_path,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=60)
+        if result.returncode == 0 and os.path.exists(out_path):
+            return out_path
+    except Exception as e:
+        print(f"    ffmpegエラー: {e}", file=sys.stderr)
     return None
 
 
@@ -171,19 +182,26 @@ async def identify_tracks_shazam(url: str, duration: int, interval: int = 300) -
 
     # 最初の30秒と最後の30秒を除いてサンプリング
     sample_times = list(range(30, max(31, duration - 30), interval))
-    print(f"\nShazam音声認識で解析します（{len(sample_times)}箇所 × 15秒）")
-    print("※ 初回はダウンロードに時間がかかります\n")
+    seg_duration = 20  # 15秒より長めにして認識率を上げる
+
+    print(f"\nShazam音声認識で解析します（{len(sample_times)}箇所 × {seg_duration}秒）")
+    print("音声URLを取得中...")
+    stream_url = _get_audio_stream_url(url)
+    if not stream_url:
+        print("音声URLの取得に失敗しました。")
+        return []
+    print("音声URL取得完了。解析を開始します。\n")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         for i, start_sec in enumerate(sample_times):
             ts = _seconds_to_timestamp(start_sec)
             print(f"[{i+1}/{len(sample_times)}] {ts} を解析中...", end=" ", flush=True)
 
-            seg_base = os.path.join(tmpdir, f"seg_{i}")
-            seg_file = _download_audio_segment(url, start_sec, 15, seg_base)
+            seg_file = os.path.join(tmpdir, f"seg_{i}.mp3")
+            seg_file = _extract_segment_ffmpeg(stream_url, start_sec, seg_duration, seg_file)
 
             if not seg_file:
-                print("ダウンロード失敗")
+                print("切り出し失敗")
                 continue
 
             try:
