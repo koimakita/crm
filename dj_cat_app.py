@@ -273,43 +273,64 @@ async def run_shazam_with_progress(video_url: str, duration: int, interval: int)
     tracks = []
     seen: set[str] = set()
     sample_times = list(range(30, max(31, duration - 30), interval))
+    total = len(sample_times)
 
-    status_text = st.empty()
+    # ── 進捗UI ──
+    step_text   = st.empty()   # 「ステップ X / Y」テキスト
     progress_bar = st.progress(0)
-    log_area = st.empty()
-    log_lines = []
+    pct_text    = st.empty()   # パーセンテージ
+    found_header = st.empty()  # 「発見した曲」ヘッダー
+    found_area  = st.empty()   # 発見曲リアルタイム表示
+    detail_text = st.empty()   # 各ステップの詳細
 
-    status_text.markdown("🎵 **音声URLを取得中...**")
+    # Step 1: 音声URL取得
+    step_text.markdown("**⬛⬜⬜ ステップ 1 / 3　音声URLを取得中...**")
+    pct_text.markdown("<span style='color:#7c6a8e;font-size:.85em'>準備中</span>",
+                      unsafe_allow_html=True)
     stream_url = _get_audio_stream_url(video_url)
     if not stream_url:
         st.error("音声URLの取得に失敗しました")
         return []
 
+    found_cards: list[str] = []
+
     with tempfile.TemporaryDirectory() as tmpdir:
         for i, start_sec in enumerate(sample_times):
             ts = _seconds_to_timestamp(start_sec)
-            pct = (i + 1) / len(sample_times)
-            status_text.markdown(f"🐱 **[{i+1}/{len(sample_times)}] {ts} を解析中...**")
+            done = i + 1
+            pct = done / total
+
+            # ── 進捗更新 ──
+            step_text.markdown(f"**⬛⬛⬜ ステップ 2 / 3　Shazam解析中 [{done}/{total}]**")
             progress_bar.progress(pct)
+            pct_text.markdown(
+                f"<span style='color:#a855f7;font-size:.9em'>"
+                f"{'█' * round(pct*20)}{'░' * (20-round(pct*20))}　"
+                f"{round(pct*100)}%　|　{ts} を解析中...</span>",
+                unsafe_allow_html=True,
+            )
 
             seg_file = os.path.join(tmpdir, f"seg_{i}.mp3")
             seg_file = _extract_segment_ffmpeg(stream_url, start_sec, 20, seg_file)
 
             if not seg_file:
-                log_lines.append(f"  `{ts}` → 切り出し失敗")
-                log_area.markdown("\n".join(log_lines))
+                detail_text.markdown(
+                    f"<span style='color:#4a3060;font-size:.8em'>`{ts}` 切り出し失敗</span>",
+                    unsafe_allow_html=True)
                 continue
 
             try:
                 result = await shazam.recognize(seg_file)
             except Exception:
-                log_lines.append(f"  `{ts}` → 認識エラー")
-                log_area.markdown("\n".join(log_lines))
+                detail_text.markdown(
+                    f"<span style='color:#4a3060;font-size:.8em'>`{ts}` 認識エラー</span>",
+                    unsafe_allow_html=True)
                 continue
 
             if not result or "track" not in result:
-                log_lines.append(f"  `{ts}` → 認識不可")
-                log_area.markdown("\n".join(log_lines))
+                detail_text.markdown(
+                    f"<span style='color:#4a3060;font-size:.8em'>`{ts}` 認識不可</span>",
+                    unsafe_allow_html=True)
                 continue
 
             track = result["track"]
@@ -318,11 +339,15 @@ async def run_shazam_with_progress(video_url: str, duration: int, interval: int)
             key = f"{title}|{artist}".lower()
 
             if not title or key in seen:
-                log_lines.append(f"  `{ts}` → 既出 or 不明")
-                log_area.markdown("\n".join(log_lines))
+                detail_text.markdown(
+                    f"<span style='color:#4a3060;font-size:.8em'>`{ts}` 既出 or 不明</span>",
+                    unsafe_allow_html=True)
                 continue
 
             seen.add(key)
+            detail_text.markdown(
+                f"<span style='color:#7c6a8e;font-size:.8em'>`{ts}` Apple Music検索中...</span>",
+                unsafe_allow_html=True)
             apple = search_apple_music(f"{artist} {title}")
             apple_url = apple["apple_music_url"] if apple else ""
             genre = apple["genre"] if apple else ""
@@ -334,13 +359,37 @@ async def run_shazam_with_progress(video_url: str, duration: int, interval: int)
                 "apple_music_url": apple_url,
                 "genre": genre,
             })
-            log_lines.append(f"  `{ts}` → ✅ **{artist} - {title}**")
-            log_area.markdown("\n".join(log_lines))
+
+            # 発見した曲をリアルタイムでカード表示
+            genre_html = f"<span style='color:#f472b6;font-size:.75em'>🎼 {genre}</span><br>" if genre else ""
+            found_cards.append(
+                f"<div style='background:#12082480;border:1px solid #3d1f6e;border-radius:8px;"
+                f"padding:8px 12px;margin:4px 0'>"
+                f"<span style='color:#06b6d4;font-family:monospace;font-size:.8em'>{ts}</span>&nbsp;&nbsp;"
+                f"<span style='color:#f0e8ff;font-size:.9em'><b>{artist}</b> - {title}</span><br>"
+                f"{genre_html}"
+                f"</div>"
+            )
+            found_header.markdown(f"**✅ 発見した曲 ({len(found_cards)}曲)**")
+            found_area.markdown("\n".join(found_cards), unsafe_allow_html=True)
+            detail_text.empty()
             await asyncio.sleep(0.5)
 
+    # 完了
+    step_text.markdown("**⬛⬛⬛ ステップ 3 / 3　完了！**")
+    progress_bar.progress(1.0)
+    pct_text.markdown(
+        f"<span style='color:#06b6d4;font-size:.9em'>✅ 解析完了 — {len(tracks)}曲 を検出しました</span>",
+        unsafe_allow_html=True)
+    detail_text.empty()
+    await asyncio.sleep(1.5)
+
+    # 進捗UIをクリア
+    step_text.empty()
     progress_bar.empty()
-    status_text.empty()
-    log_area.empty()
+    pct_text.empty()
+    found_header.empty()
+    found_area.empty()
     return tracks
 
 
