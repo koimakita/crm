@@ -396,7 +396,7 @@ if run and url:
     col1, col2 = st.columns([1, 3])
     with col1:
         if info.get("thumbnail"):
-            st.image(info["thumbnail"], use_container_width=True)
+            st.image(info["thumbnail"], use_column_width=True)
     with col2:
         st.markdown(f"### {info.get('title','')}")
         st.markdown(f"<span style='color:#7c6a8e'>チャンネル: {info.get('channel','')}</span>",
