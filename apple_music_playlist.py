@@ -63,25 +63,77 @@ def get_media_user_token(reset: bool = False) -> str:
     return token
 
 
+_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+       "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15")
+
+
+def _validate_dev_token(token: str) -> bool:
+    """カタログAPIを軽く叩いてトークンが有効か確認する"""
+    try:
+        resp = requests.get(
+            f"{AMP_API}/v1/catalog/us/songs/1500952424",
+            headers={"Authorization": f"Bearer {token}",
+                     "Origin": "https://music.apple.com"},
+            timeout=10,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
 def fetch_developer_token() -> str:
     """music.apple.com のWebプレイヤーが使う公開Bearerトークンを取得する"""
+    # 手動設定があればそれを優先（config: developer_token）
+    cfg = load_config()
+    if cfg.get("developer_token"):
+        if _validate_dev_token(cfg["developer_token"]):
+            return cfg["developer_token"]
+        print("保存済みの開発者トークンが無効になっていたため、再取得します...")
+
+    jwt_pattern = re.compile(r"eyJh[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}")
     try:
-        top = requests.get("https://music.apple.com", timeout=15)
+        top = requests.get("https://music.apple.com", timeout=15,
+                           headers={"User-Agent": _UA})
         top.raise_for_status()
-        # index-*.js のパスを探す
-        js_match = re.search(r'/assets/index[-.~][\w.-]*\.js', top.text)
-        if not js_match:
-            raise RuntimeError("Webプレイヤーのスクリプトが見つかりません")
-        js_url = "https://music.apple.com" + js_match.group(0)
-        js = requests.get(js_url, timeout=15)
-        js.raise_for_status()
-        # JWT形式のトークン（eyJ...で始まる）を探す
-        token_match = re.search(r'"(eyJh[\w-]+\.[\w-]+\.[\w-]+)"', js.text)
-        if not token_match:
-            raise RuntimeError("Bearerトークンが見つかりません")
-        return token_match.group(1)
+
+        # まれにHTML自体にトークンが埋め込まれていることもある
+        candidates = list(jwt_pattern.findall(top.text))
+
+        # ページが参照している全JSファイルを順に探す（index系を優先）
+        js_paths = re.findall(r'["\'](/assets/[^"\']+?\.js)["\']', top.text)
+        js_paths += re.findall(r'["\'](https://music\.apple\.com/assets/[^"\']+?\.js)["\']', top.text)
+        js_paths = sorted(set(js_paths), key=lambda p: ("index" not in p, p))
+
+        for path in js_paths[:20]:
+            url = path if path.startswith("http") else "https://music.apple.com" + path
+            try:
+                js = requests.get(url, timeout=15, headers={"User-Agent": _UA})
+                if js.status_code != 200:
+                    continue
+                candidates += jwt_pattern.findall(js.text)
+            except Exception:
+                continue
+
+        # 見つかった候補を実際に検証して、有効なものを使う
+        for tok in dict.fromkeys(candidates):  # 順序を保って重複除去
+            if _validate_dev_token(tok):
+                cfg["developer_token"] = tok
+                save_config(cfg)
+                return tok
+
+        raise RuntimeError("有効なBearerトークンが見つかりません")
     except Exception as e:
         print(f"開発者トークンの取得に失敗しました: {e}")
+        print()
+        print("【手動で設定する方法】")
+        print("1. Chromeで https://music.apple.com を開く")
+        print("2. 開発者ツール →「ネットワーク」タブ → フィルターに amp-api と入力")
+        print("3. ライブラリ等をクリックして通信を発生させ、リクエストをクリック")
+        print("4. リクエストヘッダーの authorization: Bearer eyJ... の")
+        print("   eyJ から始まる部分（Bearerの後ろ）をコピー")
+        print(f"5. {CONFIG_PATH} をテキストエディタで開き、次の行を追加:")
+        print('   "developer_token": "コピーした文字列"')
+        print("   （既存の media_user_token の行の後ろにカンマを付けてから）")
         sys.exit(1)
 
 
