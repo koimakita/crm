@@ -276,18 +276,27 @@ def main():
     if needs_resolve:
         print(f"{country.upper()}版Apple Musicの曲IDに変換中... ({len(needs_resolve)}曲)")
         import time as _time
+        from difflib import SequenceMatcher
+
+        def _norm(s: str) -> str:
+            return re.sub(r"[^\w\s]", " ", s.lower()).strip()
+
         resolved_tracks = []
         for t in tracks:
             if t.get("storefront") == country:
-                resolved_tracks.append(t)
+                resolved_tracks.append({**t, "warn": False, "orig": t["title"]})
                 continue
             r = resolve_track_for_country(t["title"], country)
             _time.sleep(0.3)
             if r and r["id"]:
+                found = f"{r['artist']} - {r['name']}"
+                sim = SequenceMatcher(None, _norm(t["title"]), _norm(found)).ratio()
                 resolved_tracks.append({
                     "id": r["id"],
-                    "title": f"{r['artist']} - {r['name']}",
+                    "title": found,
+                    "orig": t["title"],
                     "storefront": country,
+                    "warn": sim < 0.45,
                 })
             else:
                 skipped.append(f"{t['title']}（{country.upper()}のカタログに見つかりません）")
@@ -296,13 +305,36 @@ def main():
             print(f"{country.upper()}のカタログで1曲も見つかりませんでした。")
             sys.exit(1)
 
+    warned = [t for t in tracks if t.get("warn")]
+
     print(f"\n追加する曲: {len(tracks)}曲")
     for i, t in enumerate(tracks, 1):
-        print(f"  {i:02d}. {t['title']}")
+        mark = "⚠" if t.get("warn") else "✓"
+        print(f"  {i:02d}. {mark} {t['title']}")
+        if t.get("warn"):
+            print(f"        元の曲名: {t['orig']}")
+            print("        ↑ 名前が違って見えます。日本語表記なだけで同じ曲のこともあれば、")
+            print("          全く別の曲のこともあるので、上下を見比べてください")
     if skipped:
         print(f"\nスキップ: {len(skipped)}曲")
         for s in skipped:
             print(f"  - {s}")
+
+    # 作成前の確認
+    print()
+    if warned:
+        print(f"⚠ の曲が {len(warned)}曲 あります。")
+        choice = input("y=全部追加 / s=⚠を除外して追加 / n=中止 [y/s/N]: ").strip().lower()
+        if choice == "s":
+            tracks = [t for t in tracks if not t.get("warn")]
+        elif choice != "y":
+            print("中止しました。")
+            sys.exit(0)
+    else:
+        choice = input("この内容でプレイリストを作成しますか？ [y/N]: ").strip().lower()
+        if choice != "y":
+            print("中止しました。")
+            sys.exit(0)
 
     user_token = get_media_user_token(reset=args.reset_token)
     if args.set_dev_token:
