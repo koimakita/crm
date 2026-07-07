@@ -135,6 +135,29 @@ def search_apple_music(track_query: str) -> dict | None:
     return None
 
 
+def _download_audio(video_url: str, out_dir: str, progress_hook=None) -> str | None:
+    """yt-dlpで音声全体を一度だけダウンロードする（ストリーム切り出しの失敗対策）"""
+    out_tmpl = os.path.join(out_dir, "audio.%(ext)s")
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "format": "bestaudio[ext=m4a]/bestaudio/best",
+        "outtmpl": out_tmpl,
+        "socket_timeout": 30,
+    }
+    if progress_hook:
+        ydl_opts["progress_hooks"] = [progress_hook]
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([_clean_youtube_url(video_url)])
+        for f in os.listdir(out_dir):
+            if f.startswith("audio."):
+                return os.path.join(out_dir, f)
+    except Exception as e:
+        print(f"音声ダウンロードエラー: {e}", file=sys.stderr)
+    return None
+
+
 def _get_audio_stream_url(video_url: str) -> str | None:
     """yt-dlpで音声ストリームの直接URLを取得する（一度だけ呼ぶ）"""
     ydl_opts = {
@@ -172,7 +195,8 @@ def _extract_segment_ffmpeg(stream_url: str, start_sec: int, duration: int, out_
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, timeout=60)
-        if result.returncode == 0 and os.path.exists(out_path):
+        # 空・極小ファイルは無音や失敗とみなす（10KB ≒ 数秒未満の音声）
+        if result.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 10_000:
             return out_path
     except Exception as e:
         print(f"    ffmpegエラー: {e}", file=sys.stderr)
@@ -197,20 +221,21 @@ async def identify_tracks_shazam(url: str, duration: int, interval: int = 300) -
     seg_duration = 20  # 15秒より長めにして認識率を上げる
 
     print(f"\nShazam音声認識で解析します（{len(sample_times)}箇所 × {seg_duration}秒）")
-    print("音声URLを取得中...")
-    stream_url = _get_audio_stream_url(url)
-    if not stream_url:
-        print("音声URLの取得に失敗しました。")
-        return []
-    print("音声URL取得完了。解析を開始します。\n")
+    print("音声をダウンロード中...（一度だけ・数十MB程度）")
 
     with tempfile.TemporaryDirectory() as tmpdir:
+        audio_file = _download_audio(url, tmpdir)
+        if not audio_file:
+            print("音声のダウンロードに失敗しました。")
+            return []
+        print("ダウンロード完了。解析を開始します。\n")
+
         for i, start_sec in enumerate(sample_times):
             ts = _seconds_to_timestamp(start_sec)
             print(f"[{i+1}/{len(sample_times)}] {ts} を解析中...", end=" ", flush=True)
 
             seg_file = os.path.join(tmpdir, f"seg_{i}.mp3")
-            seg_file = _extract_segment_ffmpeg(stream_url, start_sec, seg_duration, seg_file)
+            seg_file = _extract_segment_ffmpeg(audio_file, start_sec, seg_duration, seg_file)
 
             if not seg_file:
                 print("切り出し失敗")

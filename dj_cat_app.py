@@ -14,7 +14,7 @@ from youtube_dj_tracker import (
     extract_tracks_from_chapters,
     extract_tracks_from_description,
     search_apple_music,
-    _get_audio_stream_url,
+    _download_audio,
     _extract_segment_ffmpeg,
     _seconds_to_timestamp,
 )
@@ -283,18 +283,33 @@ async def run_shazam_with_progress(video_url: str, duration: int, interval: int)
     found_area  = st.empty()   # 発見曲リアルタイム表示
     detail_text = st.empty()   # 各ステップの詳細
 
-    # Step 1: 音声URL取得
-    step_text.markdown("**⬛⬜⬜ ステップ 1 / 3　音声URLを取得中...**")
+    # Step 1: 音声を丸ごとダウンロード（一度だけ）
+    step_text.markdown("**⬛⬜⬜ ステップ 1 / 3　音声をダウンロード中...**")
     pct_text.markdown("<span style='color:#7c6a8e;font-size:.85em'>準備中</span>",
                       unsafe_allow_html=True)
-    stream_url = _get_audio_stream_url(video_url)
-    if not stream_url:
-        st.error("音声URLの取得に失敗しました")
-        return []
+
+    def _dl_hook(d):
+        if d.get("status") != "downloading":
+            return
+        total = d.get("total_bytes") or d.get("total_bytes_estimate")
+        done = d.get("downloaded_bytes", 0)
+        if total:
+            p = done / total
+            pct_text.markdown(
+                f"<span style='color:#a855f7;font-size:.9em'>"
+                f"{'█' * round(p*20)}{'░' * (20-round(p*20))}　"
+                f"ダウンロード {round(p*100)}%　({done//1048576}MB / {total//1048576}MB)</span>",
+                unsafe_allow_html=True,
+            )
 
     found_cards: list[str] = []
 
     with tempfile.TemporaryDirectory() as tmpdir:
+        audio_file = _download_audio(video_url, tmpdir, progress_hook=_dl_hook)
+        if not audio_file:
+            st.error("音声のダウンロードに失敗しました")
+            return []
+
         for i, start_sec in enumerate(sample_times):
             ts = _seconds_to_timestamp(start_sec)
             done = i + 1
@@ -311,7 +326,7 @@ async def run_shazam_with_progress(video_url: str, duration: int, interval: int)
             )
 
             seg_file = os.path.join(tmpdir, f"seg_{i}.mp3")
-            seg_file = _extract_segment_ffmpeg(stream_url, start_sec, 20, seg_file)
+            seg_file = _extract_segment_ffmpeg(audio_file, start_sec, 20, seg_file)
 
             if not seg_file:
                 detail_text.markdown(
