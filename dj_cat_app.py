@@ -423,11 +423,19 @@ st.markdown('<p class="app-sub">YouTube DJ動画から曲を解析 → Apple Mus
 
 url = st.text_input("", placeholder="🔗  YouTube URL を貼り付けてください", label_visibility="collapsed")
 
+def _format_interval(sec: int) -> str:
+    if sec < 60:
+        return f"{sec}秒おき"
+    if sec % 60 == 0:
+        return f"{sec//60}分おき"
+    return f"{sec//60}分{sec%60}秒おき"
+
+
 interval = st.select_slider(
     "サンプリング間隔（短いほど多くの曲を検出、時間もかかる）",
-    options=[60, 90, 120, 180, 240, 300],
+    options=[30, 60, 90, 120, 180, 240, 300],
     value=180,
-    format_func=lambda x: f"{x//60}分おき",
+    format_func=_format_interval,
 )
 
 run = st.button("🎧  EXTRACT TRACKS")
