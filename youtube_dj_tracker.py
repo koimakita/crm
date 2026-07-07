@@ -48,6 +48,17 @@ def get_youtube_video_info(url: str) -> dict:
     }
 
 
+def _is_song_chapter(title: str) -> bool:
+    """チャプタータイトルが曲名らしいかどうかを判定する"""
+    # 末尾が時刻パターン (例: "18:00", "20:30") → イベントスケジュール
+    if re.search(r'\d{1,2}:\d{2}\s*$', title):
+        return False
+    # 曜日・毎週などのキーワードを含む → イベント告知
+    if re.search(r'(毎週|月曜|火曜|水曜|木曜|金曜|土曜|日曜|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)', title, re.IGNORECASE):
+        return False
+    return True
+
+
 def extract_tracks_from_chapters(chapters: list) -> list:
     return [
         {
@@ -55,7 +66,7 @@ def extract_tracks_from_chapters(chapters: list) -> list:
             "timestamp": _seconds_to_timestamp(ch.get("start_time", 0)),
         }
         for ch in chapters
-        if ch.get("title", "").strip()
+        if ch.get("title", "").strip() and _is_song_chapter(ch.get("title", "").strip())
     ]
 
 
