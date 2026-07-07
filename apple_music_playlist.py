@@ -81,6 +81,39 @@ def _validate_dev_token(token: str) -> bool:
         return False
 
 
+def set_developer_token_interactive() -> str:
+    """開発者トークンを対話形式で設定する"""
+    print("=" * 60)
+    print("開発者トークン（Bearerトークン）の設定")
+    print("=" * 60)
+    print("1. Chromeで https://music.apple.com を開く（ログイン済みの状態）")
+    print("2. 右クリック →「検証」→「ネットワーク」タブ")
+    print("3. フィルター欄に amp-api と入力")
+    print("4. ページを再読み込みするか、左メニューの「ライブラリ」をクリック")
+    print("5. 一覧に出たリクエストをクリック →「リクエストヘッダー」の")
+    print("   authorization: Bearer eyJ..... という行を探す")
+    print("6. Bearer の後ろの eyJ から始まる長い文字列をコピーして貼り付け")
+    print("   （Bearer ごとコピーしてしまってもOK）")
+    print("=" * 60)
+    token = input("authorization トークンを貼り付けてください: ").strip()
+    # "Bearer " 付きや引用符付きで貼られても動くように掃除する
+    token = token.strip('"\'')
+    if token.lower().startswith("bearer"):
+        token = token[6:].strip()
+    if not token.startswith("eyJ"):
+        print("eyJ から始まる文字列ではありません。コピーする場所を確認してください。")
+        sys.exit(1)
+    print("トークンを確認中...")
+    if not _validate_dev_token(token):
+        print("このトークンは無効でした。コピーし直して再実行してください。")
+        sys.exit(1)
+    cfg = load_config()
+    cfg["developer_token"] = token
+    save_config(cfg)
+    print(f"保存しました: {CONFIG_PATH}\n")
+    return token
+
+
 def fetch_developer_token() -> str:
     """music.apple.com のWebプレイヤーが使う公開Bearerトークンを取得する"""
     # 手動設定があればそれを優先（config: developer_token）
@@ -123,18 +156,8 @@ def fetch_developer_token() -> str:
 
         raise RuntimeError("有効なBearerトークンが見つかりません")
     except Exception as e:
-        print(f"開発者トークンの取得に失敗しました: {e}")
-        print()
-        print("【手動で設定する方法】")
-        print("1. Chromeで https://music.apple.com を開く")
-        print("2. 開発者ツール →「ネットワーク」タブ → フィルターに amp-api と入力")
-        print("3. ライブラリ等をクリックして通信を発生させ、リクエストをクリック")
-        print("4. リクエストヘッダーの authorization: Bearer eyJ... の")
-        print("   eyJ から始まる部分（Bearerの後ろ）をコピー")
-        print(f"5. {CONFIG_PATH} をテキストエディタで開き、次の行を追加:")
-        print('   "developer_token": "コピーした文字列"')
-        print("   （既存の media_user_token の行の後ろにカンマを付けてから）")
-        sys.exit(1)
+        print(f"自動取得に失敗しました（{e}）。手動で設定します。\n")
+        return set_developer_token_interactive()
 
 
 def parse_tracklist(path: str) -> tuple[list[dict], list[str]]:
@@ -202,6 +225,8 @@ def main():
     parser.add_argument("--description", "-d", default="", help="プレイリストの説明")
     parser.add_argument("--reset-token", action="store_true",
                         help="保存済みのMedia User Tokenを設定し直す")
+    parser.add_argument("--set-dev-token", action="store_true",
+                        help="開発者トークン（Bearer）を手動で設定し直す")
     args = parser.parse_args()
 
     if not os.path.exists(args.txt_file):
@@ -222,8 +247,11 @@ def main():
             print(f"  - {s}")
 
     user_token = get_media_user_token(reset=args.reset_token)
-    print("\n開発者トークンを取得中...")
-    dev_token = fetch_developer_token()
+    if args.set_dev_token:
+        dev_token = set_developer_token_interactive()
+    else:
+        print("\n開発者トークンを取得中...")
+        dev_token = fetch_developer_token()
 
     desc = args.description or "DJ CAT TRACKER で作成"
     print(f"プレイリスト「{args.name}」を作成中...")
