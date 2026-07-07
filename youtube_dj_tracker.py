@@ -114,9 +114,10 @@ def _seconds_to_timestamp(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
-def search_apple_music(track_query: str) -> dict | None:
+def search_apple_music(track_query: str, country: str = "jp") -> dict | None:
     url = "https://itunes.apple.com/search"
-    params = {"term": track_query, "entity": "song", "limit": 1, "media": "music"}
+    params = {"term": track_query, "entity": "song", "limit": 1,
+              "media": "music", "country": country}
     try:
         resp = requests.get(url, params=params, timeout=10)
         resp.raise_for_status()

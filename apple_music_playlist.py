@@ -176,16 +176,44 @@ def parse_tracklist(path: str) -> tuple[list[dict], list[str]]:
         if m:
             current_title = m.group(1).strip()
             continue
-        # Apple Music URL の行から曲IDを抜き出す
-        url_m = re.search(r"music\.apple\.com/\S*[?&]i=(\d+)", line)
+        # Apple Music URL の行から国コードと曲IDを抜き出す
+        url_m = re.search(r"music\.apple\.com/([a-z]{2})/\S*[?&]i=(\d+)", line)
         if url_m and current_title:
-            tracks.append({"id": url_m.group(1), "title": current_title})
+            tracks.append({
+                "storefront": url_m.group(1),
+                "id": url_m.group(2),
+                "title": current_title,
+            })
             current_title = None
         elif "見つかりませんでした" in line and current_title:
             skipped.append(current_title)
             current_title = None
 
     return tracks, skipped
+
+
+def resolve_track_for_country(title: str, country: str) -> dict | None:
+    """曲名で指定した国のApple Musicカタログを検索してIDを取得する"""
+    query = title.replace(" - ", " ")
+    try:
+        resp = requests.get(
+            "https://itunes.apple.com/search",
+            params={"term": query, "entity": "song", "limit": 1,
+                    "media": "music", "country": country},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("resultCount", 0) > 0:
+            r = data["results"][0]
+            return {
+                "id": str(r.get("trackId", "")),
+                "name": r.get("trackName", ""),
+                "artist": r.get("artistName", ""),
+            }
+    except Exception:
+        pass
+    return None
 
 
 def create_playlist(name: str, description: str, track_ids: list[str],
@@ -227,6 +255,8 @@ def main():
                         help="保存済みのMedia User Tokenを設定し直す")
     parser.add_argument("--set-dev-token", action="store_true",
                         help="開発者トークン（Bearer）を手動で設定し直す")
+    parser.add_argument("--country", default="jp",
+                        help="自分のApple Musicの国コード（デフォルト: jp）")
     args = parser.parse_args()
 
     if not os.path.exists(args.txt_file):
@@ -238,11 +268,39 @@ def main():
         print("Apple MusicのURLが1件も見つかりませんでした。")
         sys.exit(1)
 
-    print(f"追加する曲: {len(tracks)}曲")
+    country = args.country.lower()
+
+    # txtのIDが別の国のカタログのものなら、自分の国のIDに変換する
+    # （国が違うと同じIDが別の曲を指したり、存在せずスキップされたりするため）
+    needs_resolve = [t for t in tracks if t.get("storefront") != country]
+    if needs_resolve:
+        print(f"{country.upper()}版Apple Musicの曲IDに変換中... ({len(needs_resolve)}曲)")
+        import time as _time
+        resolved_tracks = []
+        for t in tracks:
+            if t.get("storefront") == country:
+                resolved_tracks.append(t)
+                continue
+            r = resolve_track_for_country(t["title"], country)
+            _time.sleep(0.3)
+            if r and r["id"]:
+                resolved_tracks.append({
+                    "id": r["id"],
+                    "title": f"{r['artist']} - {r['name']}",
+                    "storefront": country,
+                })
+            else:
+                skipped.append(f"{t['title']}（{country.upper()}のカタログに見つかりません）")
+        tracks = resolved_tracks
+        if not tracks:
+            print(f"{country.upper()}のカタログで1曲も見つかりませんでした。")
+            sys.exit(1)
+
+    print(f"\n追加する曲: {len(tracks)}曲")
     for i, t in enumerate(tracks, 1):
         print(f"  {i:02d}. {t['title']}")
     if skipped:
-        print(f"\nApple Musicに無いためスキップ: {len(skipped)}曲")
+        print(f"\nスキップ: {len(skipped)}曲")
         for s in skipped:
             print(f"  - {s}")
 

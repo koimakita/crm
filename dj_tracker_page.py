@@ -111,6 +111,7 @@ def search_apple_music(track_query: str) -> dict | None:
         "entity": "song",
         "limit": 1,
         "media": "music",
+        "country": "jp",
     }
     try:
         resp = requests.get(url, params=params, timeout=10)
